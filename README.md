@@ -35,7 +35,7 @@ Copy `.env.example` and set the values for your deployment.
 - `GITHUB_API_URL`: override API base URL, useful for GitHub Enterprise Server
 - `RUNNER_NAME`: custom runner name; defaults to `hostname-random`
 - `RUNNER_WORKDIR`: runner work directory, default `_work`
-- `RUNNER_LABELS`: comma-separated labels, default `self-hosted,linux`
+- `RUNNER_LABELS`: comma-separated labels, default `self-hosted,linux,github-runner,docker,node,pnpm`
 - `RUNNER_GROUP`: runner group for organization or enterprise runners
 - `RUNNER_EPHEMERAL`: `true` to use an ephemeral runner
 - `RUNNER_REPLACE`: `true` to replace an existing runner with the same name
