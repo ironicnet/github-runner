@@ -5,7 +5,7 @@ set -euo pipefail
 readonly RUNNER_HOME="${RUNNER_HOME:-/home/runner/actions-runner}"
 readonly RUNNER_WORKDIR="${RUNNER_WORKDIR:-_work}"
 readonly RUNNER_NAME="${RUNNER_NAME:-$(hostname)-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
-readonly RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux}"
+readonly RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,github-runner,docker,node,pnpm}"
 readonly RUNNER_GROUP="${RUNNER_GROUP:-}"
 readonly RUNNER_EPHEMERAL="${RUNNER_EPHEMERAL:-false}"
 readonly RUNNER_REPLACE="${RUNNER_REPLACE:-true}"
@@ -14,6 +14,7 @@ readonly RUNNER_NO_DEFAULT_LABELS="${RUNNER_NO_DEFAULT_LABELS:-false}"
 readonly NODE_VERSION="${NODE_VERSION:-22}"
 readonly PNPM_VERSION="${PNPM_VERSION:-10.17.1}"
 readonly RUNNER_STATE_FILE="${RUNNER_STATE_FILE:-${RUNNER_HOME}/.runner-config-state}"
+readonly DOCKER_SOCKET="${DOCKER_SOCKET:-/var/run/docker.sock}"
 
 registration_token=""
 
@@ -51,6 +52,13 @@ require_command() {
 
 trim_trailing_slash() {
     printf '%s' "${1%/}"
+}
+
+user_in_group() {
+    local user_name="$1"
+    local group_name="$2"
+
+    id -nG "${user_name}" | tr ' ' '\n' | grep -Fxq "${group_name}"
 }
 
 desired_runner_state() {
@@ -202,6 +210,39 @@ configure_node_toolchain() {
     corepack prepare "pnpm@${PNPM_VERSION}" --activate
 }
 
+configure_docker_access() {
+    local socket_gid
+    local socket_group_name
+
+    require_command docker
+
+    if [[ ! -S "${DOCKER_SOCKET}" ]]; then
+        log "Docker socket ${DOCKER_SOCKET} not found; mount the host socket to enable local Docker builds"
+        return
+    fi
+
+    socket_gid="$(stat -c '%g' "${DOCKER_SOCKET}")"
+    socket_group_name="$(getent group "${socket_gid}" | cut -d: -f1 || true)"
+
+    if [[ -z "${socket_group_name}" ]]; then
+        socket_group_name="docker-host"
+        if getent group "${socket_group_name}" >/dev/null 2>&1; then
+            socket_group_name="docker-host-${socket_gid}"
+        fi
+        groupadd --gid "${socket_gid}" "${socket_group_name}"
+    fi
+
+    if ! user_in_group runner "${socket_group_name}"; then
+        usermod -aG "${socket_group_name}" runner
+    fi
+
+    if [[ "${DOCKER_SOCKET}" != "/var/run/docker.sock" && -z "${DOCKER_HOST:-}" ]]; then
+        export DOCKER_HOST="unix://${DOCKER_SOCKET}"
+    fi
+
+    log "Docker socket access configured for runner via group ${socket_group_name} (gid ${socket_gid})"
+}
+
 remove_existing_runner_config() {
     local remove_token
 
@@ -263,6 +304,7 @@ main() {
     local -a config_args
 
     require_command curl
+    require_command docker
     require_command jq
     require_command gosu
     require_command setsid
@@ -273,6 +315,7 @@ main() {
 
     mkdir -p "${RUNNER_HOME}"
     chown -R runner:runner "${RUNNER_HOME}"
+    configure_docker_access
 
     cd "${RUNNER_HOME}"
 

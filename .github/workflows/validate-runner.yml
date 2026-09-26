@@ -3,9 +3,34 @@ name: Validate runner image
 on:
   pull_request:
   push:
+  workflow_dispatch:
 
 jobs:
-  validate:
+  validate-self-hosted:
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: [self-hosted, github-runner]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate runner artifact URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(grep -E '^ARG RUNNER_VERSION=' Dockerfile | cut -d= -f2)"
+
+          for arch in x64 arm64; do
+            url="https://github.com/actions/runner/releases/download/v${version}/actions-runner-linux-${arch}-${version}.tar.gz"
+            curl --fail --silent --show-error --location --head "${url}" > /dev/null
+          done
+
+      - name: Build image
+        run: docker build .
+
+  validate-bootstrap:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read

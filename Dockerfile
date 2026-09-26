@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim
 
-ARG RUNNER_VERSION=2.328.0
+ARG RUNNER_VERSION=2.337.0
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -10,12 +10,26 @@ RUN apt-get update \
         curl \
         git \
         gosu \
+        gpg \
         jq \
         libicu72 \
         tar \
         unzip \
         util-linux \
         xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && . /etc/os-release \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" \
+      > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        docker-buildx-plugin \
+        docker-ce-cli \
+        docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
 RUN npm install --global n
