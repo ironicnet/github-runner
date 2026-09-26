@@ -35,7 +35,7 @@ Copy `.env.example` and set the values for your deployment.
 - `GITHUB_API_URL`: override API base URL, useful for GitHub Enterprise Server
 - `RUNNER_NAME`: custom runner name; defaults to `hostname-random`
 - `RUNNER_WORKDIR`: runner work directory, default `_work`
-- `RUNNER_LABELS`: comma-separated labels, default `self-hosted,linux,github-runner,docker,node,pnpm`
+- `RUNNER_LABELS`: comma-separated labels, default `self-hosted,linux,github-runner,node,pnpm`
 - `RUNNER_GROUP`: runner group for organization or enterprise runners
 - `RUNNER_EPHEMERAL`: `true` to use an ephemeral runner
 - `RUNNER_REPLACE`: `true` to replace an existing runner with the same name
@@ -61,7 +61,7 @@ docker run --rm \
   github-runner
 ```
 
-The container is designed to use the host Docker daemon through a mounted socket instead of Docker-in-Docker. On startup, the entrypoint detects the socket GID and grants the `runner` user access dynamically so host-specific Docker group IDs do not need to be hard-coded into the image.
+The container is designed to use the host Docker daemon through a mounted socket instead of Docker-in-Docker. On startup, the entrypoint detects the socket GID and grants the `runner` user access dynamically so host-specific Docker group IDs do not need to be hard-coded into the image. The runner only adds the `docker` label when a usable Docker daemon is available through `DOCKER_HOST` or the mounted socket.
 
 ## Coolify deployment
 
@@ -98,7 +98,7 @@ The repository also keeps a manual `workflow_dispatch` bootstrap path on `ubuntu
 - If you provide only `RUNNER_TOKEN`, the runner can register, but deregistration on shutdown is skipped because GitHub requires a separate remove token.
 - If you persist `RUNNER_HOME` and later change `GITHUB_URL`, `RUNNER_NAME`, labels, or related runner settings, provide `GITHUB_PAT` or `GITHUB_TOKEN` so the container can safely remove the old registration and create a new one.
 - If `RUNNER_EPHEMERAL=true`, treat `RUNNER_HOME` as non-persistent storage. When a PAT/token is available the container will remove the ephemeral registration on exit; without one, terminating the container before the runner completes a job can leave a stale remote registration in GitHub.
-- The default labels include `github-runner` and `docker` so the repository can target these runners for self-validation while still advertising Docker-capable execution.
+- The default labels include `github-runner`; the `docker` label is added dynamically only when the runner has access to a usable Docker daemon.
 - Node.js and pnpm are prepared inside the container so workflows can use them without extra setup.
 
 ## Reference

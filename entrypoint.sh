@@ -5,7 +5,8 @@ set -euo pipefail
 readonly RUNNER_HOME="${RUNNER_HOME:-/home/runner/actions-runner}"
 readonly RUNNER_WORKDIR="${RUNNER_WORKDIR:-_work}"
 readonly RUNNER_NAME="${RUNNER_NAME:-$(hostname)-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')}"
-readonly RUNNER_LABELS="${RUNNER_LABELS:-self-hosted,linux,github-runner,docker,node,pnpm}"
+readonly DEFAULT_RUNNER_LABELS="self-hosted,linux,github-runner,node,pnpm"
+RUNNER_LABELS="${RUNNER_LABELS:-${DEFAULT_RUNNER_LABELS}}"
 readonly RUNNER_GROUP="${RUNNER_GROUP:-}"
 readonly RUNNER_EPHEMERAL="${RUNNER_EPHEMERAL:-false}"
 readonly RUNNER_REPLACE="${RUNNER_REPLACE:-true}"
@@ -59,6 +60,55 @@ user_in_group() {
     local group_name="$2"
 
     id -nG "${user_name}" | tr ' ' '\n' | grep -Fxq "${group_name}"
+}
+
+runner_has_label() {
+    local target_label="$1"
+    local label
+
+    IFS=',' read -r -a labels <<< "${RUNNER_LABELS}"
+    for label in "${labels[@]}"; do
+        if [[ "${label}" == "${target_label}" ]]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+add_runner_label() {
+    local target_label="$1"
+
+    if runner_has_label "${target_label}"; then
+        return
+    fi
+
+    if [[ -z "${RUNNER_LABELS}" ]]; then
+        RUNNER_LABELS="${target_label}"
+    else
+        RUNNER_LABELS="${RUNNER_LABELS},${target_label}"
+    fi
+}
+
+remove_runner_label() {
+    local target_label="$1"
+    local label
+    local -a filtered_labels=()
+
+    IFS=',' read -r -a labels <<< "${RUNNER_LABELS}"
+    for label in "${labels[@]}"; do
+        if [[ -n "${label}" && "${label}" != "${target_label}" ]]; then
+            filtered_labels+=("${label}")
+        fi
+    done
+
+    if [[ "${#filtered_labels[@]}" -eq 0 ]]; then
+        RUNNER_LABELS=""
+        return
+    fi
+
+    IFS=','
+    RUNNER_LABELS="${filtered_labels[*]}"
 }
 
 desired_runner_state() {
@@ -216,7 +266,14 @@ configure_docker_access() {
 
     require_command docker
 
+    if [[ -n "${DOCKER_HOST:-}" ]]; then
+        add_runner_label docker
+        log "Docker access configured via DOCKER_HOST=${DOCKER_HOST}"
+        return
+    fi
+
     if [[ ! -S "${DOCKER_SOCKET}" ]]; then
+        remove_runner_label docker
         log "Docker socket ${DOCKER_SOCKET} not found; mount the host socket to enable local Docker builds"
         return
     fi
@@ -240,6 +297,7 @@ configure_docker_access() {
         export DOCKER_HOST="unix://${DOCKER_SOCKET}"
     fi
 
+    add_runner_label docker
     log "Docker socket access configured for runner via group ${socket_group_name} (gid ${socket_gid})"
 }
 
