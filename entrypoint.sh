@@ -13,6 +13,7 @@ readonly RUNNER_DISABLE_UPDATE="${RUNNER_DISABLE_UPDATE:-false}"
 readonly RUNNER_NO_DEFAULT_LABELS="${RUNNER_NO_DEFAULT_LABELS:-false}"
 readonly NODE_VERSION="${NODE_VERSION:-22}"
 readonly PNPM_VERSION="${PNPM_VERSION:-10.17.1}"
+readonly RUNNER_STATE_FILE="${RUNNER_STATE_FILE:-${RUNNER_HOME}/.runner-config-state}"
 
 registration_token=""
 
@@ -27,6 +28,20 @@ bool_true() {
     esac
 }
 
+node_version_matches() {
+    local current_version="$1"
+    local requested_version="$2"
+
+    case "${requested_version}" in
+        *.*)
+            [[ "${current_version}" == "${requested_version}" || "${current_version}" == "${requested_version}".* ]]
+            ;;
+        *)
+            [[ "${current_version%%.*}" == "${requested_version}" ]]
+            ;;
+    esac
+}
+
 require_command() {
     command -v "$1" >/dev/null 2>&1 || {
         printf 'Missing required command: %s\n' "$1" >&2
@@ -36,6 +51,40 @@ require_command() {
 
 trim_trailing_slash() {
     printf '%s' "${1%/}"
+}
+
+desired_runner_state() {
+    cat <<EOF
+GITHUB_URL=${GITHUB_URL}
+RUNNER_NAME=${RUNNER_NAME}
+RUNNER_WORKDIR=${RUNNER_WORKDIR}
+RUNNER_LABELS=${RUNNER_LABELS}
+RUNNER_GROUP=${RUNNER_GROUP}
+RUNNER_EPHEMERAL=${RUNNER_EPHEMERAL}
+RUNNER_REPLACE=${RUNNER_REPLACE}
+RUNNER_DISABLE_UPDATE=${RUNNER_DISABLE_UPDATE}
+RUNNER_NO_DEFAULT_LABELS=${RUNNER_NO_DEFAULT_LABELS}
+NODE_VERSION=${NODE_VERSION}
+PNPM_VERSION=${PNPM_VERSION}
+EOF
+}
+
+runner_config_is_current() {
+    [[ -f "${RUNNER_STATE_FILE}" ]] && [[ "$(cat "${RUNNER_STATE_FILE}")" == "$(desired_runner_state)" ]]
+}
+
+persist_runner_state() {
+    mkdir -p "$(dirname "${RUNNER_STATE_FILE}")" || return 1
+    desired_runner_state > "${RUNNER_STATE_FILE}" || return 1
+    chown runner:runner "${RUNNER_STATE_FILE}" || return 1
+}
+
+clear_local_runner_state() {
+    rm -f \
+        "${RUNNER_HOME}/.credentials" \
+        "${RUNNER_HOME}/.credentials_rsaparams" \
+        "${RUNNER_HOME}/.runner" \
+        "${RUNNER_STATE_FILE}"
 }
 
 derive_api_base() {
@@ -138,19 +187,32 @@ configure_node_toolchain() {
     local current_version
 
     require_command node
-    require_command npm
-    require_command corepack
 
     current_version="$(node -v | sed 's/^v//')"
-    if [[ "${current_version}" != "${NODE_VERSION}" && "${current_version}" != "${NODE_VERSION}".* ]]; then
+    if ! node_version_matches "${current_version}" "${NODE_VERSION}"; then
         log "Installing Node.js ${NODE_VERSION}"
         n "${NODE_VERSION}"
         hash -r
     fi
 
+    require_command corepack
+
     log "Activating pnpm ${PNPM_VERSION}"
     corepack enable
     corepack prepare "pnpm@${PNPM_VERSION}" --activate
+}
+
+remove_existing_runner_config() {
+    local remove_token
+
+    if ! remove_token="$(fetch_remove_token 2>/dev/null)"; then
+        printf 'Existing runner configuration does not match the requested environment. Set GITHUB_PAT or GITHUB_TOKEN so the runner can be reconfigured safely.\n' >&2
+        exit 1
+    fi
+
+    log "Removing existing runner registration before reconfiguration"
+    gosu runner bash -lc "cd '${RUNNER_HOME}' && ./config.sh remove --token '${remove_token}'"
+    clear_local_runner_state
 }
 
 cleanup() {
@@ -164,9 +226,21 @@ cleanup() {
         return
     fi
 
+    if bool_true "${RUNNER_EPHEMERAL}"; then
+        if remove_token="$(fetch_remove_token 2>/dev/null)"; then
+            log "Removing ephemeral runner registration"
+            gosu runner bash -lc "cd '${RUNNER_HOME}' && ./config.sh remove --token '${remove_token}'" || true
+        else
+            log "Skipping explicit deregistration for ephemeral runner because no PAT/token is available"
+        fi
+        clear_local_runner_state
+        return
+    fi
+
     if remove_token="$(fetch_remove_token 2>/dev/null)"; then
         log "Removing runner registration"
         gosu runner bash -lc "cd '${RUNNER_HOME}' && ./config.sh remove --token '${remove_token}'" || true
+        clear_local_runner_state
         return
     fi
 
@@ -174,9 +248,15 @@ cleanup() {
 }
 
 handle_signal() {
+    trap - EXIT
+
     if [[ -n "${runner_pid:-}" ]]; then
-        kill "${runner_pid}" 2>/dev/null || true
+        kill -TERM -- "-${runner_pid}" 2>/dev/null || kill "${runner_pid}" 2>/dev/null || true
+        wait "${runner_pid}" 2>/dev/null || true
     fi
+
+    cleanup
+    exit 0
 }
 
 main() {
@@ -185,6 +265,7 @@ main() {
     require_command curl
     require_command jq
     require_command gosu
+    require_command setsid
 
     : "${GITHUB_URL:?Set GITHUB_URL to a repository, organization, or enterprise URL.}"
 
@@ -195,12 +276,21 @@ main() {
 
     cd "${RUNNER_HOME}"
 
-    trap cleanup EXIT INT TERM
+    trap cleanup EXIT
     trap handle_signal INT TERM
 
-    if [[ -f "${RUNNER_HOME}/.runner" ]]; then
+    if [[ ! -f "${RUNNER_HOME}/.runner" ]] && { [[ -f "${RUNNER_HOME}/.credentials" ]] || [[ -f "${RUNNER_HOME}/.credentials_rsaparams" ]] || [[ -f "${RUNNER_STATE_FILE}" ]]; }; then
+        log "Clearing incomplete local runner state"
+        clear_local_runner_state
+    fi
+
+    if [[ -f "${RUNNER_HOME}/.runner" ]] && runner_config_is_current; then
         log "Existing runner configuration detected; skipping registration"
     else
+        if [[ -f "${RUNNER_HOME}/.runner" ]]; then
+            remove_existing_runner_config
+        fi
+
         registration_token="$(fetch_registration_token)"
 
         config_args=(
@@ -234,10 +324,18 @@ main() {
 
         log "Configuring runner ${RUNNER_NAME} for ${GITHUB_URL}"
         gosu runner ./config.sh "${config_args[@]}"
+        if ! persist_runner_state; then
+            if remove_token="$(fetch_remove_token 2>/dev/null)"; then
+                gosu runner bash -lc "cd '${RUNNER_HOME}' && ./config.sh remove --token '${remove_token}'" || true
+            fi
+            log "Failed to persist runner state; cleaning up local registration"
+            clear_local_runner_state
+            exit 1
+        fi
     fi
 
     log "Starting runner"
-    gosu runner ./run.sh &
+    setsid gosu runner ./run.sh &
     runner_pid=$!
     wait "${runner_pid}"
 }

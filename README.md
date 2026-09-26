@@ -15,13 +15,14 @@ This image follows GitHub's self-hosted runner model by downloading the official
 
 ## Environment variables
 
-Copy `/home/runner/work/github-runner/github-runner/.env.example` and set the values for your deployment.
+Copy `.env.example` and set the values for your deployment.
 
 ### Required
 
 - `GITHUB_URL`: Repository, organization, or enterprise URL to register against
   - Repository example: `https://github.com/OWNER/REPOSITORY`
   - Organization example: `https://github.com/ORG`
+  - GitHub Enterprise Server organization example: `https://GITHUB_HOST/orgs/ORG/settings/actions/runners`
   - Enterprise example: `https://github.com/enterprises/ENTERPRISE`
 - One of:
   - `RUNNER_TOKEN`: short-lived runner registration token from GitHub
@@ -72,8 +73,10 @@ That keeps each runner independently scoped while reusing the same image.
 
 ## Notes
 
-- If you provide `GITHUB_PAT` or `GITHUB_TOKEN`, the container can request both registration and removal tokens from GitHub and will deregister the runner when the container exits.
+- If you provide `GITHUB_PAT` or `GITHUB_TOKEN`, the container can request both registration and removal tokens from GitHub, deregister the runner when the container exits, and then register it again on the next startup. Persisting `RUNNER_HOME` in that mode keeps the local runner files, but the registration itself is recreated on each container start.
 - If you provide only `RUNNER_TOKEN`, the runner can register, but deregistration on shutdown is skipped because GitHub requires a separate remove token.
+- If you persist `RUNNER_HOME` and later change `GITHUB_URL`, `RUNNER_NAME`, labels, or related runner settings, provide `GITHUB_PAT` or `GITHUB_TOKEN` so the container can safely remove the old registration and create a new one.
+- If `RUNNER_EPHEMERAL=true`, treat `RUNNER_HOME` as non-persistent storage. When a PAT/token is available the container will remove the ephemeral registration on exit; without one, terminating the container before the runner completes a job can leave a stale remote registration in GitHub.
 - Node.js and pnpm are prepared inside the container so workflows can use them without extra setup.
 
 ## Reference

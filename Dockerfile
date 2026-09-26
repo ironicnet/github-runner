@@ -14,6 +14,7 @@ RUN apt-get update \
         libicu72 \
         tar \
         unzip \
+        util-linux \
         xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
